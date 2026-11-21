@@ -61,7 +61,20 @@ export function calc(D, t) {
     return { ...m, on: !m.end, meals, dep: sum(D.deposits.filter(x => x.uid === m.id).map(x => +x.amt)) };
   });
   const totalExp = sum(exp.map(x => x.price)), totalMeals = sum(list.map(m => m.meals));
-  const rate = totalMeals ? totalExp / totalMeals : 0;
-  list.forEach(m => { m.cost = m.meals * rate; m.bal = m.dep - m.cost; });
+  const wMeals = sum(list.map(m => m.meals * (m.w || 1)));   // meals weighted by each member's price factor
+  const rate = wMeals ? totalExp / wMeals : 0;               // base rate, for a member with factor 1
+  list.forEach(m => { m.cost = m.meals * (m.w || 1) * rate; m.bal = m.dep - m.cost; });
   return { list, exp, dep, rate, totalExp, totalMeals, totalDep: sum(dep.map(x => x.amt)), pay: settle(list), nm };
+}
+
+// Meals per member per slot between from and to (inclusive). Blank from = earliest start, blank/future to = today.
+export function mealTable(D, from, to, t) {
+  const ovBy = {};
+  [...D.meals].sort((a, b) => a.ts - b.ts).forEach(o => (ovBy[o.date] = ovBy[o.date] || []).push(o));
+  const lo = from || D.members.map(m => m.start || t).sort()[0] || t, hi = to && to < t ? to : t;
+  const days = eachDay(lo, hi);
+  return D.members.map(m => {
+    const c = CFG.meals.map(k => sum(days.map(d => cnt(m, d, k, ovBy[d] || []))));
+    return { id: m.id, name: m.name, on: !m.end, c, total: sum(c) };
+  }).filter(r => r.total > 0 || r.on);
 }

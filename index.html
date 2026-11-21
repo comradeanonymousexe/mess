@@ -27,6 +27,7 @@ th,td{border:1px solid var(--ink);padding:6px 8px;text-align:left;white-space:no
 th{background:var(--ink);color:#fff;font-weight:600}
 .r{text-align:right}
 .me td{background:#d8def5;font-weight:700}
+.tag{background:var(--ink);color:#fff;padding:0 6px;font-size:13px;white-space:nowrap}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 .f{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}.f input,.f select{flex:1 1 120px}
 .f label{display:flex;align-items:center;gap:4px}.f label input{flex:none}
@@ -35,7 +36,7 @@ td input{width:64px}
 </style></head><body><div id="app"></div>
 <script type="module">
 import { CFG } from './config.js';
-import { typeAt, cnt, calc } from './logic.js';
+import { sum, typeAt, cnt, calc, mealTable } from './logic.js';
 import { initializeApp, deleteApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
@@ -57,7 +58,7 @@ const ER = {
 };
 
 const D = { members: [], deposits: [], expenses: [], meals: [] };
-let user, unsub = [], ready = new Set(), S, tab = 'হিসাব', date = today();
+let user, unsub = [], ready = new Set(), S, tab = 'হিসাব', date = today(), showM = false, mf = '', mt = '';
 
 // ---------- data layer ----------
 let lastTs = 0; const stamp = () => (lastTs = Math.max(Date.now(), lastTs + 1));   // strictly increasing, so write order is never ambiguous
@@ -84,9 +85,15 @@ const redraw = () => { if (/INPUT|SELECT/.test(document.activeElement?.tagName |
 // ---------- views ----------
 const Vh = () => { const c = CFG.cur, a = S.adm; return `<div class=tiles>
 <div class="t big"><small>মিল রেট</small><b>${c}${n(S.rate, 2)}</b></div>
-${[['মোট খরচ', c + n(S.totalExp)], ['মোট জমা', c + n(S.totalDep)], ['মোট মিল', n(S.totalMeals)], ['জমা − খরচ', c + n(S.totalDep - S.totalExp)]].map(x => `<div class=t><small>${x[0]}</small><b>${x[1]}</b></div>`).join('')}</div>
-<div class=w><table><tr><th>নাম<th class=r>মিল<th class=r>জমা<th class=r>খরচ<th>অবস্থা</tr>${S.list.map(m => { const b = m.bal, k = Math.abs(b) < .5 ? 'মিলেছে' : b < 0 ? `<b class=bad>দিবে ${c}${n(-b)}</b>` : `<b class=ok>পাবে ${c}${n(b)}</b>`; return `<tr class="${m.id == user.uid ? 'me' : ''}"><td>${esc(m.name)}${m.on ? '' : ' (সরানো)'}<td class=r>${n(m.meals)}<td class=r>${n(m.dep)}<td class=r>${n(m.cost)}<td>${k}</tr>`; }).join('')}</table></div>
+${[['মোট খরচ', c + n(S.totalExp)], ['মোট জমা', c + n(S.totalDep)], ['মোট মিল ' + (showM ? '▲' : '▼'), n(S.totalMeals), 'onclick=toggleM() style=cursor:pointer'], ['জমা − খরচ', c + n(S.totalDep - S.totalExp)]].map(x => `<div class=t ${x[2] || ''}><small>${x[0]}</small><b>${x[1]}</b></div>`).join('')}</div>${showM ? Vmt() : ''}
+<div class=w><table><tr><th>নাম<th class=r>মিল<th class=r>জমা<th class=r>খরচ<th>অবস্থা</tr>${S.list.map(m => { const b = m.bal, k = Math.abs(b) < .5 ? 'মিলেছে' : b < 0 ? `<b class=bad>দিবে ${c}${n(-b)}</b>` : `<b class=ok>পাবে ${c}${n(b)}</b>`; return `<tr class="${m.id == user.uid ? 'me' : ''}"><td>${esc(m.name)}${m.on ? '' : ' (সরানো)'}${(m.w || 1) != 1 ? ` <span class=tag title="প্রতি মিলে ${n(m.w, 2)} গুণ দিতে হয়">${n(m.w, 2)} গুণ</span>` : ''}<td class=r>${n(m.meals)}<td class=r>${n(m.dep)}<td class=r>${n(m.cost)}<td>${k}</tr>`; }).join('')}</table></div>
 ${S.pay.length ? `<h2>কে কাকে দিবে</h2><div class=w><table><tr><th>কে দিবে<th>কাকে<th class=r>টাকা${a ? '<th>' : ''}</tr>${S.pay.map(p => `<tr><td>${esc(p.fn)}<td>${esc(p.tn)}<td class=r>${c}${n(p.amt)}${a ? `<td><button class=o onclick="pay('${p.from}','${p.to}',${Math.round(p.amt)})">দেওয়া হয়েছে</button>` : ''}</tr>`).join('')}</table></div>` : ''}`; };
+
+const Vmt = () => {
+  const M = CFG.meals, r = mealTable(D, mf, mt, today()), tot = M.map((_, i) => sum(r.map(x => x.c[i])));
+  return `<div class=f><label>থেকে <input type=date value="${mf}" onchange="setMR('mf',this.value)"></label><label>পর্যন্ত <input type=date value="${mt}" onchange="setMR('mt',this.value)"></label><button class=o onclick="setMR('all')">সব সময়</button></div>
+<div class=w><table><tr><th>নাম${M.map(k => `<th class=r>${k}`).join('')}<th class=r>মোট</tr>${r.map(x => `<tr class="${x.id == user.uid ? 'me' : ''}"><td>${esc(x.name)}${x.c.map(c => `<td class=r>${n(c)}`).join('')}<td class=r>${n(x.total)}</tr>`).join('')}<tr><th>মোট${tot.map(c => `<th class=r>${n(c)}`).join('')}<th class=r>${n(sum(tot))}</tr></table></div>`;
+};
 
 const Ve = () => { const a = S.adm; return (a ? `<div class=f><input id=d type=date value=${date}><input id=i placeholder="আইটেম"><input id=q placeholder="পরিমাণ (২ কেজি)"><input id=p type=number inputmode=decimal placeholder="দাম"></div><div class=f id=by><span>রিপোর্ট করেছে:</span>${S.list.filter(m => m.on).map(m => `<label><input type=checkbox value=${m.id}> ${esc(m.name)}</label>`).join('')}</div><div class=f><button onclick=addExp()>খরচ যোগ</button></div>` : '') + `<div class=w><table><tr><th>তারিখ<th>আইটেম<th>পরিমাণ<th>রিপোর্ট<th class=r>দাম${a ? '<th>' : ''}</tr>${S.exp.slice().reverse().map(x => `<tr><td>${dt(x.d)}<td>${esc(x.item)}<td>${esc(x.qty)}<td>${esc(x.by)}<td class=r>${n(x.price)}${a ? `<td><button class=o onclick="del('expenses','${x.id}')">মুছুন</button>` : ''}</tr>`).join('')}<tr><th colspan=4>মোট<th class=r>${n(S.totalExp)}${a ? '<th>' : ''}</tr></table></div>`; };
 
@@ -101,7 +108,7 @@ const Vm = () => {
 };
 
 const Vs = () => `<div class=f><input id=nm placeholder="নাম"><input id=un placeholder="ইউজারনেম (ইংরেজি)" autocapitalize=none><input id=pw placeholder="পিন (৬+ অক্ষর)"><select id=ty><option>${CFG.reg}<option>${CFG.irr}</select><label>শুরু <input id=st type=date value=${today()}></label><label><input id=me type=checkbox> এটা আমি (অ্যাডমিন)</label><button onclick=addMember()>সদস্য যোগ</button></div>
-<div class=w><table><tr><th>নাম<th>ইউজারনেম<th>ধরন<th>শুরু<th>শেষ<th></tr>${D.members.map(m => `<tr><td>${esc(m.name)}<td>${esc(m.user || '')}<td><button class=o onclick="editType('${m.id}')">${m.type}</button><td><button class=o onclick="editStart('${m.id}')">${dt(m.start)}</button><td>${dt(m.end)}<td>${m.end ? '' : `${m.user == CFG.admin ? '' : `<button class=o onclick="reset('${m.id}')">পিন রিসেট</button> `}<button class=o onclick="removeMember('${m.id}')">সরান</button>`}</tr>`).join('')}</table></div>`;
+<div class=w><table><tr><th>নাম<th>ইউজারনেম<th>ধরন<th>বাড়তি<th>শুরু<th>শেষ<th></tr>${D.members.map(m => `<tr><td>${esc(m.name)}<td>${esc(m.user || '')}<td><button class=o onclick="editType('${m.id}')">${m.type}</button><td><button class=o onclick="editW('${m.id}')">${n(Math.round(((m.w || 1) - 1) * 100))}%</button><td><button class=o onclick="editStart('${m.id}')">${dt(m.start)}</button><td>${dt(m.end)}<td>${m.end ? '' : `${m.user == CFG.admin ? '' : `<button class=o onclick="reset('${m.id}')">পিন রিসেট</button> `}<button class=o onclick="removeMember('${m.id}')">সরান</button>`}</tr>`).join('')}</table></div>`;
 
 function draw() {
   S = { ...calc(D, today()), adm: user.email == mail(CFG.admin) };
@@ -114,6 +121,8 @@ const loginView = () => { $('#app').innerHTML = `<div id=lg><h1>${esc(CFG.title)
 
 // ---------- actions (admin writes are also enforced by firestore.rules) ----------
 const A = {
+  toggleM: () => { showM = !showM; draw(); },
+  setMR: (k, x) => { if (k == 'all') mf = mt = ''; else if (k == 'mf') mf = x; else mt = x; draw(); },
   setTab: t => { tab = t; draw(); },
   setDate: d => { date = d || date; draw(); },
   doLogin: () => signInWithEmailAndPassword(auth, mail(v('un')), $('#pn').value).catch(() => alert('ইউজারনেম বা পিন ভুল')),
@@ -161,6 +170,14 @@ const A = {
     const hist = [...(m.hist || [{ from: m.start, type: m.type }]), { from, type: t }].sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
     await updateDoc(doc(db, 'members', id), { hist, type: typeAt({ ...m, hist }, today()) });
   }),
+  editW: id => act(async () => {
+    const m = D.members.find(x => x.id == id);
+    const p = prompt('কত শতাংশ বেশি দিবে? (০ = সবার মতো)', Math.round(((m.w || 1) - 1) * 100));
+    if (p === null) return;
+    const x = parseFloat(p.replace(/[০-৯]/g, d => '০১২৩৪৫৬৭৮৯'.indexOf(d)));
+    if (isNaN(x) || x < -90) throw Error('সংখ্যা ঠিক নেই');
+    await updateDoc(doc(db, 'members', id), { w: 1 + x / 100 });
+  }),
   editStart: id => act(async () => {
     const m = D.members.find(x => x.id == id), s = prompt('শুরুর তারিখ (YYYY-MM-DD)', m.start);
     if (!s) return;
@@ -176,7 +193,7 @@ const A = {
     const dp = D.deposits.filter(x => x.uid == id), ml = D.meals.filter(x => x.uid == id), ex = D.expenses.filter(x => (x.by || []).includes(id));
     if (dp.length + ml.length + ex.length > 450) throw Error('রেকর্ড বেশি, একবারে সরানো যাবে না');
     const uid = await mk(u, pin), b = writeBatch(db);
-    b.set(doc(db, 'members', uid), { name: m.name, user: u, type: m.type, start: m.start, end: m.end, hist: m.hist || [{ from: m.start, type: m.type }] });
+    b.set(doc(db, 'members', uid), { name: m.name, user: u, type: m.type, w: m.w || 1, start: m.start, end: m.end, hist: m.hist || [{ from: m.start, type: m.type }] });
     dp.forEach(x => b.update(doc(db, 'deposits', x.id), { uid }));
     ml.forEach(x => b.update(doc(db, 'meals', x.id), { uid }));
     ex.forEach(x => b.update(doc(db, 'expenses', x.id), { by: x.by.map(i => i == id ? uid : i) }));
