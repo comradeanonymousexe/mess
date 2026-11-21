@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="bn"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>মেস হিসাব</title>
+<link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#e9ede4;--ink:#000;--mut:#58604f;--acc:#2433d9;--ok:#0a7a3d;--bad:#d0231c}
+*{box-sizing:border-box;margin:0}
+body{font:16px/1.5 'Hind Siliguri',system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:14px;max-width:760px;margin:auto}
+h1{font-size:24px;font-weight:700}
+h2{font-size:18px;margin:16px 0 8px}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+input,select,button{font:inherit;border:2px solid var(--ink);background:#fff;color:var(--ink);padding:6px 10px;border-radius:0;min-width:0}
+button{background:var(--ink);color:#fff;cursor:pointer;font-weight:600}
+button.o{background:#fff;color:var(--ink)}
+:focus-visible{outline:3px solid var(--acc);outline-offset:1px}
+nav{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px}
+nav button{background:#fff;color:var(--ink)}nav button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.t{border:2px solid var(--ink);padding:8px 12px;background:#fff}
+.t small{color:var(--mut);display:block}.t b{font-size:22px}
+.t.big{grid-column:1/-1;background:var(--acc);border-color:var(--acc);color:#fff}
+.t.big small{color:#d6d9ff}.t.big b{font-size:44px;line-height:1.2}
+.w{overflow-x:auto}
+table{width:100%;border-collapse:collapse;background:#fff}
+th,td{border:1px solid var(--ink);padding:6px 8px;text-align:left;white-space:nowrap}
+th{background:var(--ink);color:#fff;font-weight:600}
+.r{text-align:right}
+.me td{background:#d8def5;font-weight:700}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.f{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}.f input,.f select{flex:1 1 120px}
+.f label{display:flex;align-items:center;gap:4px}.f label input{flex:none}
+td input{width:64px}
+#lg{max-width:320px;margin:18vh auto;display:grid;gap:10px}
+</style></head><body><div id="app"></div>
+<script type="module">
+import { CFG } from './config.js';
+import { typeAt, cnt, calc } from './logic.js';
+import { initializeApp, deleteApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updatePassword } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, writeBatch, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const app = initializeApp(CFG.firebase), auth = getAuth(app), db = getFirestore(app);
+const $ = s => document.querySelector(s), v = i => $('#' + i).value.trim();
+const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const today = () => iso(new Date());
+const n = (x, d = 0) => (+x).toLocaleString('bn-BD', { maximumFractionDigits: d });
+const esc = s => String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
+const dt = d => d ? n(+d.slice(8)) + '/' + n(+d.slice(5, 7)) : '';
+const isD = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+const mail = u => u.trim().toLowerCase() + '@' + CFG.domain;
+const ER = {
+  'auth/email-already-in-use': 'এই ইউজারনেম আগে থেকে আছে',
+  'auth/requires-recent-login': 'বের হয়ে আবার লগইন করে চেষ্টা করুন',
+  'auth/weak-password': 'পিন কমপক্ষে ৬ অক্ষর',
+  'permission-denied': 'অনুমতি নেই'
+};
+
+const D = { members: [], deposits: [], expenses: [], meals: [] };
+let user, unsub = [], ready = new Set(), S, tab = 'হিসাব', date = today();
+
+// ---------- data layer ----------
+let lastTs = 0; const stamp = () => (lastTs = Math.max(Date.now(), lastTs + 1));   // strictly increasing, so write order is never ambiguous
+const add = (c, o) => addDoc(collection(db, c), { ...o, ts: stamp() });
+const act = async f => { try { document.activeElement?.blur?.(); await f(); } catch (e) { alert(ER[e.code] || e.message); } };
+// creates a login without signing the admin out (second app instance)
+async function mk(u, pin) {
+  const a2 = initializeApp(CFG.firebase, 't' + Date.now()), au = getAuth(a2);
+  try { return (await createUserWithEmailAndPassword(au, mail(u), pin)).user.uid; }
+  finally { await signOut(au); await deleteApp(a2); }
+}
+onAuthStateChanged(auth, u => {
+  unsub.forEach(f => f()); unsub = []; ready = new Set(); user = u;
+  if (!u) return loginView();
+  $('#app').innerHTML = '<p style="padding:20px">লোড হচ্ছে…</p>';
+  Object.keys(D).forEach(c => unsub.push(onSnapshot(collection(db, c), s => {
+    D[c] = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    ready.add(c); if (ready.size == 4) redraw();
+  }, e => { if (e.code == 'permission-denied') { alert('অনুমতি নেই'); signOut(auth); } })));
+});
+// do not wipe a form the admin is typing in
+const redraw = () => { if (/INPUT|SELECT/.test(document.activeElement?.tagName || '')) return; draw(); };
+
+// ---------- views ----------
+const Vh = () => { const c = CFG.cur, a = S.adm; return `<div class=tiles>
+<div class="t big"><small>মিল রেট</small><b>${c}${n(S.rate, 2)}</b></div>
+${[['মোট খরচ', c + n(S.totalExp)], ['মোট জমা', c + n(S.totalDep)], ['মোট মিল', n(S.totalMeals)], ['জমা − খরচ', c + n(S.totalDep - S.totalExp)]].map(x => `<div class=t><small>${x[0]}</small><b>${x[1]}</b></div>`).join('')}</div>
+<div class=w><table><tr><th>নাম<th class=r>মিল<th class=r>জমা<th class=r>খরচ<th>অবস্থা</tr>${S.list.map(m => { const b = m.bal, k = Math.abs(b) < .5 ? 'মিলেছে' : b < 0 ? `<b class=bad>দিবে ${c}${n(-b)}</b>` : `<b class=ok>পাবে ${c}${n(b)}</b>`; return `<tr class="${m.id == user.uid ? 'me' : ''}"><td>${esc(m.name)}${m.on ? '' : ' (সরানো)'}<td class=r>${n(m.meals)}<td class=r>${n(m.dep)}<td class=r>${n(m.cost)}<td>${k}</tr>`; }).join('')}</table></div>
+${S.pay.length ? `<h2>কে কাকে দিবে</h2><div class=w><table><tr><th>কে দিবে<th>কাকে<th class=r>টাকা${a ? '<th>' : ''}</tr>${S.pay.map(p => `<tr><td>${esc(p.fn)}<td>${esc(p.tn)}<td class=r>${c}${n(p.amt)}${a ? `<td><button class=o onclick="pay('${p.from}','${p.to}',${Math.round(p.amt)})">দেওয়া হয়েছে</button>` : ''}</tr>`).join('')}</table></div>` : ''}`; };
+
+const Ve = () => { const a = S.adm; return (a ? `<div class=f><input id=d type=date value=${date}><input id=i placeholder="আইটেম"><input id=q placeholder="পরিমাণ (২ কেজি)"><input id=p type=number inputmode=decimal placeholder="দাম"></div><div class=f id=by><span>রিপোর্ট করেছে:</span>${S.list.filter(m => m.on).map(m => `<label><input type=checkbox value=${m.id}> ${esc(m.name)}</label>`).join('')}</div><div class=f><button onclick=addExp()>খরচ যোগ</button></div>` : '') + `<div class=w><table><tr><th>তারিখ<th>আইটেম<th>পরিমাণ<th>রিপোর্ট<th class=r>দাম${a ? '<th>' : ''}</tr>${S.exp.slice().reverse().map(x => `<tr><td>${dt(x.d)}<td>${esc(x.item)}<td>${esc(x.qty)}<td>${esc(x.by)}<td class=r>${n(x.price)}${a ? `<td><button class=o onclick="del('expenses','${x.id}')">মুছুন</button>` : ''}</tr>`).join('')}<tr><th colspan=4>মোট<th class=r>${n(S.totalExp)}${a ? '<th>' : ''}</tr></table></div>`; };
+
+const Vd = () => { const a = S.adm; return (a ? `<div class=f><input id=d type=date value=${date}><select id=m>${S.list.filter(m => m.on).map(m => `<option value=${m.id}>${esc(m.name)}`).join('')}</select><input id=p type=number inputmode=decimal placeholder="টাকা"><input id=t placeholder="নোট (ঐচ্ছিক)"><button onclick=addDep()>জমা যোগ</button></div>` : '') + `<div class=w><table><tr><th>তারিখ<th>নাম<th>নোট<th class=r>টাকা${a ? '<th>' : ''}</tr>${S.dep.slice().reverse().map(x => `<tr><td>${dt(x.d)}<td>${esc(x.name)}<td>${esc(x.note)}<td class=r>${n(x.amt)}${a ? `<td><button class=o onclick="del('deposits','${x.id}')">মুছুন</button>` : ''}</tr>`).join('')}<tr><th colspan=3>মোট<th class=r>${n(S.totalDep)}${a ? '<th>' : ''}</tr></table></div>`; };
+
+const Vm = () => {
+  const M = CFG.meals, ov = D.meals.filter(o => o.date == date).sort((a, b) => a.ts - b.ts);
+  const rows = D.members.filter(m => m.start <= date && (!m.end || m.end >= date));
+  return `<div class=f><input type=date value=${date} onchange="setDate(this.value)"></div>
+<div class=f>${M.map(k => `<button onclick="bulk('${k}',0)">সবার ${k} বন্ধ</button>`).join('')}<button onclick="bulk('*',0)">পুরো দিন বন্ধ</button><button class=o onclick="bulk('*',null)">ডিফল্টে ফেরান</button></div>
+<div class=w><table><tr><th>নাম<th>ধরন${M.map(k => `<th>${k}`).join('')}</tr>${rows.map(m => `<tr><td>${esc(m.name)}<td>${typeAt(m, date)}${M.map(k => `<td><input type=number min=0 value=${cnt(m, date, k, ov)} onchange="setMeal('${m.id}','${k}',this.value)">`).join('')}</tr>`).join('')}</table></div>`;
+};
+
+const Vs = () => `<div class=f><input id=nm placeholder="নাম"><input id=un placeholder="ইউজারনেম (ইংরেজি)" autocapitalize=none><input id=pw placeholder="পিন (৬+ অক্ষর)"><select id=ty><option>${CFG.reg}<option>${CFG.irr}</select><label>শুরু <input id=st type=date value=${today()}></label><label><input id=me type=checkbox> এটা আমি (অ্যাডমিন)</label><button onclick=addMember()>সদস্য যোগ</button></div>
+<div class=w><table><tr><th>নাম<th>ইউজারনেম<th>ধরন<th>শুরু<th>শেষ<th></tr>${D.members.map(m => `<tr><td>${esc(m.name)}<td>${esc(m.user || '')}<td><button class=o onclick="editType('${m.id}')">${m.type}</button><td><button class=o onclick="editStart('${m.id}')">${dt(m.start)}</button><td>${dt(m.end)}<td>${m.end ? '' : `${m.user == CFG.admin ? '' : `<button class=o onclick="reset('${m.id}')">পিন রিসেট</button> `}<button class=o onclick="removeMember('${m.id}')">সরান</button>`}</tr>`).join('')}</table></div>`;
+
+function draw() {
+  S = { ...calc(D, today()), adm: user.email == mail(CFG.admin) };
+  const T = ['হিসাব', 'খরচ', 'জমা', ...(S.adm ? ['মিল', 'সদস্য'] : [])], V = { 'হিসাব': Vh, 'খরচ': Ve, 'জমা': Vd, 'মিল': Vm, 'সদস্য': Vs };
+  if (!T.includes(tab)) tab = 'হিসাব';
+  $('#app').innerHTML = `<header><h1>${esc(CFG.title)}</h1><span><button class=o onclick=pinChange()>পিন বদলান</button> <button class=o onclick=out()>বের হন</button></span></header>
+<nav>${T.map(t => `<button class="${t == tab ? 'on' : ''}" onclick="setTab('${t}')">${t}</button>`).join('')}</nav>${V[tab]()}`;
+}
+const loginView = () => { $('#app').innerHTML = `<div id=lg><h1>${esc(CFG.title)}</h1><input id=un placeholder="ইউজারনেম" autocapitalize=none autocomplete=username><input id=pn type=password placeholder="পিন" autocomplete=current-password onkeydown="event.key=='Enter'&&doLogin()"><button onclick=doLogin()>ঢুকুন</button></div>`; };
+
+// ---------- actions (admin writes are also enforced by firestore.rules) ----------
+const A = {
+  setTab: t => { tab = t; draw(); },
+  setDate: d => { date = d || date; draw(); },
+  doLogin: () => signInWithEmailAndPassword(auth, mail(v('un')), $('#pn').value).catch(() => alert('ইউজারনেম বা পিন ভুল')),
+  out: () => signOut(auth),
+  pinChange: () => { const p = prompt('নতুন পিন (কমপক্ষে ৬ অক্ষর)'); if (p) act(async () => { await updatePassword(auth.currentUser, p); alert('বদলেছে'); }); },
+  del: (c, id) => confirm('মুছবেন?') && act(() => deleteDoc(doc(db, c, id))),
+  addExp: () => {
+    const o = { date: v('d'), item: v('i'), qty: v('q'), price: +v('p'), by: [...document.querySelectorAll('#by input:checked')].map(i => i.value) };
+    if (!isD(o.date) || !o.item || !o.qty || !(o.price > 0) || !o.by.length) return alert('আইটেম, পরিমাণ, দাম, কে রিপোর্ট করেছে — সব দিতে হবে');
+    act(() => add('expenses', o));
+  },
+  addDep: () => {
+    const o = { date: v('d'), uid: v('m'), amt: +v('p'), note: v('t') };
+    if (!isD(o.date) || !o.uid || !(o.amt > 0)) return alert('তারিখ, সদস্য, টাকা দিন');
+    act(() => add('deposits', o));
+  },
+  // settle: two deposit rows (payer +, receiver -), total deposits stay the same
+  pay: (f, t, a) => confirm('দেওয়া হয়েছে হিসেবে লিখবেন?') && act(async () => {
+    const b = writeBatch(db), ts = stamp(), d = today();
+    b.set(doc(collection(db, 'deposits')), { date: d, uid: f, amt: a, note: 'পরিশোধ: ' + S.nm(t) + 'কে দিয়েছে', ts });
+    b.set(doc(collection(db, 'deposits')), { date: d, uid: t, amt: -a, note: 'পরিশোধ: ' + S.nm(f) + ' থেকে পেয়েছে', ts });
+    await b.commit();
+  }),
+  // n = number, or null for "back to default"
+  setMeal: (uid, meal, x) => act(() => add('meals', { date, uid, meal, n: x === '' ? null : Math.max(0, +x || 0) })),
+  bulk: (meal, x) => confirm('সবার জন্য, নিশ্চিত?') && act(() => add('meals', { date, uid: '*', meal, n: x })),
+  addMember: () => act(async () => {
+    const name = v('nm'), u = v('un').toLowerCase(), pin = $('#pw').value, self = $('#me').checked, start = v('st'), type = v('ty');
+    if (!name || !isD(start)) throw Error('নাম আর শুরুর তারিখ দিন');
+    let uid, un = u;
+    if (self) { uid = user.uid; un = CFG.admin; if (D.members.some(m => m.id == uid)) throw Error('আপনি আগেই যোগ করা আছেন'); }
+    else {
+      if (!/^[a-z0-9._-]+$/.test(u)) throw Error('ইউজারনেমে শুধু ইংরেজি অক্ষর, সংখ্যা');
+      if (pin.length < 6) throw Error('পিন কমপক্ষে ৬ অক্ষর');
+      uid = await mk(u, pin);
+    }
+    await setDoc(doc(db, 'members', uid), { name, user: un, type, start, end: '', hist: [{ from: start, type }] });
+  }),
+  // type changes keep history, so past days are never recalculated
+  editType: id => act(async () => {
+    const m = D.members.find(x => x.id == id), t = m.type == CFG.reg ? CFG.irr : CFG.reg;
+    const from = prompt(t + ' হবে কোন তারিখ থেকে? (YYYY-MM-DD)', today());
+    if (!from) return;
+    if (!isD(from)) throw Error('তারিখ ঠিক নেই');
+    const hist = [...(m.hist || [{ from: m.start, type: m.type }]), { from, type: t }].sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
+    await updateDoc(doc(db, 'members', id), { hist, type: typeAt({ ...m, hist }, today()) });
+  }),
+  editStart: id => act(async () => {
+    const m = D.members.find(x => x.id == id), s = prompt('শুরুর তারিখ (YYYY-MM-DD)', m.start);
+    if (!s) return;
+    if (!isD(s)) throw Error('তারিখ ঠিক নেই');
+    await updateDoc(doc(db, 'members', id), { start: s });
+  }),
+  removeMember: id => confirm('সরাবেন? আজ পর্যন্তের হিসাব থাকবে, লগইন বন্ধ হবে।') && act(() => updateDoc(doc(db, 'members', id), { end: today() })),
+  // new login + same member: all records move to the new login id, old login is cut off
+  reset: id => act(async () => {
+    const m = D.members.find(x => x.id == id);
+    const u = (prompt('ইউজারনেম', m.user) || '').trim().toLowerCase(), pin = prompt('নতুন পিন (কমপক্ষে ৬ অক্ষর)') || '';
+    if (!/^[a-z0-9._-]+$/.test(u) || pin.length < 6) throw Error('ঠিক ইউজারনেম আর ৬+ অক্ষরের পিন লাগবে');
+    const dp = D.deposits.filter(x => x.uid == id), ml = D.meals.filter(x => x.uid == id), ex = D.expenses.filter(x => (x.by || []).includes(id));
+    if (dp.length + ml.length + ex.length > 450) throw Error('রেকর্ড বেশি, একবারে সরানো যাবে না');
+    const uid = await mk(u, pin), b = writeBatch(db);
+    b.set(doc(db, 'members', uid), { name: m.name, user: u, type: m.type, start: m.start, end: m.end, hist: m.hist || [{ from: m.start, type: m.type }] });
+    dp.forEach(x => b.update(doc(db, 'deposits', x.id), { uid }));
+    ml.forEach(x => b.update(doc(db, 'meals', x.id), { uid }));
+    ex.forEach(x => b.update(doc(db, 'expenses', x.id), { by: x.by.map(i => i == id ? uid : i) }));
+    b.delete(doc(db, 'members', id));
+    await b.commit();
+  })
+};
+Object.assign(window, A);
+</script></body></html>
